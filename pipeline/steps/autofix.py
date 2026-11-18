@@ -55,6 +55,27 @@ def _clip(text):
     return f"{cls} {(x1 + x2) / 2:.6f} {(y1 + y2) / 2:.6f} {nw:.6f} {nh:.6f}"
 
 
+def _still_applies(text, code, cfg, n_classes):
+    """Dòng `text` còn đúng lỗi `code` đã báo không? Chặn issue cũ (số dòng đã lệch) làm xoá nhầm dòng tốt.
+    DUP_BOX cần so với các dòng khác nên không kiểm lại ở đây: tin issue."""
+    if code == "DUP_BOX":
+        return True
+    try:
+        cls, cx, cy, w, h = parse_yolo_line(text)
+    except ValueError:
+        return code == "BAD_FORMAT"
+    if code == "BAD_FORMAT":
+        return False
+    if code == "BAD_CLASS_ID":
+        return not 0 <= cls < n_classes
+    if code == "BOX_ZERO":
+        return w <= 0 or h <= 0
+    if code == "BOX_OUT_OF_IMAGE":
+        overflow = max(0.0, w / 2 - cx, cx + w / 2 - 1, h / 2 - cy, cy + h / 2 - 1)
+        return overflow > cfg["label_format"]["overflow_tol"]
+    return True
+
+
 def fix(ds, issues, cfg):
     errors = [i for i in issues if i.severity == ERROR]            # cảnh báo là việc của người: không đụng tới
     fixes = []
@@ -91,7 +112,10 @@ def fix(ds, issues, cfg):
             if no > len(raw):
                 continue                                           # số dòng cũ không còn tồn tại
             text = raw[no - 1]
-            if by_file[stem][no] & DROP_CODES:                     # dòng dính nhiều lỗi: xoá thắng, chỉ ghi một fix
+            codes = {c for c in by_file[stem][no] if _still_applies(text, c, cfg, len(ds.classes))}
+            if not codes:
+                continue                                           # issue cũ: dòng này không còn lỗi đã báo -> không đụng tới
+            if codes & DROP_CODES:                                 # dòng dính nhiều lỗi: xoá thắng, chỉ ghi một fix
                 drop.add(no)
                 record(stem, no, "drop_line", text.strip(), "(đã xoá dòng)")
                 continue
